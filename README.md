@@ -43,23 +43,17 @@
 [console.anthropic.com](https://console.anthropic.com) → API Keys에서 키를 만듭니다 → `ANTHROPIC_API_KEY`.
 공지 1건 요약에 몇 원~수십 원 정도 듭니다. 키 없이도 봇은 돌아갑니다 (규칙 기반 요약).
 
-## 3. 무료로 24시간 돌리기: GitHub Actions
+## 3. 24시간 돌리기: Oracle Cloud 무료 서버
 
-공개(public) 저장소면 GitHub Actions가 무료·무제한입니다. 10분마다 공지를 확인합니다.
+[deploy/ORACLE.md](deploy/ORACLE.md)에 순서대로 정리돼 있습니다 (가입 → 비용 잠금 → 서버 생성 → 포럼 접속 테스트 → 설치).
 
-1. 이 폴더를 GitHub 새 저장소(public)로 올립니다.
-2. 저장소 → Settings → Secrets and variables → Actions
-   - **Secrets**: `DISCORD_WEBHOOK_NOTICE`, `DISCORD_WEBHOOK_UPDATE`, `ANTHROPIC_API_KEY`
-   - (선택) **Variables**: `BOARD_CODES` (게시판 코드 직접 지정, 쉼표 구분)
-3. Actions 탭 → "도깨비의세계 공지 확인" → **Run workflow**로 한 번 실행해 로그를 확인합니다.
-   첫 실행 로그에 `처음 실행: 기존 글 N개를 읽음 처리`가 보이면 정상입니다.
+GitHub Actions(`.github/workflows/notice.yml`)도 들어 있지만, 포럼 API가 GitHub 서버 IP를 막고 있어서(HTTP 403)
+예약 실행은 꺼 두었습니다. 수동 실행만 남아 있어요.
 
-주의할 점
-- GitHub 예약 실행은 몇 분씩 늦게 돌 때가 많습니다 (보통 10~20분 안에 도착).
-- 공개 저장소에서 60일 동안 커밋이 없으면 GitHub이 예약 실행을 멈춥니다. 메일이 오면 Actions 탭에서 다시 켜면 됩니다.
-- 비공개 저장소는 월 2,000분 무료라 10분 간격이면 모자랍니다. 비공개로 쓰려면 cron을 `*/30 * * * *`로 바꾸세요.
-- GitHub 서버는 해외에 있습니다. 포럼이 해외 접속을 막는다면 로그에 `HTTP 403`이 반복됩니다.
-  그때는 아래 '로컬/국내 서버' 방식을 쓰세요 (Oracle Cloud 무료 VM은 춘천 리전 선택 가능).
+### 비용 안전장치 (봇 자체)
+
+- 디스코드 전송이 실패해도 요약은 다시 만들지 않고, 만들어 둔 메시지를 다음 확인 때 다시 보냅니다. 12번 실패하면 그 글은 포기합니다.
+- Claude 요약은 하루 최대 `CLAUDE_DAILY_LIMIT`(기본 30)회. 넘으면 규칙 기반 요약으로 보냅니다.
 
 ## 4. 내 PC나 서버에서 돌리기
 
@@ -97,3 +91,4 @@ GitHub에서는 Actions 탭 → "도깨비의세계 공지 확인" → **Run wor
 | `ANTHROPIC_API_KEY` | 없음 | 있으면 Claude(`claude-opus-5-5`)로 요약 |
 | `BOARD_CODES` | 자동 | 비우면 이름에 `공지`/`업데이트`가 들어간 게시판을 자동 선택 |
 | `CHECK_INTERVAL` | `300` | `--loop` 확인 간격(초) |
+| `CLAUDE_DAILY_LIMIT` | `30` | 하루 Claude 요약 최대 횟수 |

@@ -39,6 +39,8 @@ ROUTES = [
 
 SEEN_LIMIT = 300         # 게시판별로 기억할 글 번호 수
 FAIL_ALERT_AFTER = 12     # 연속 실패가 이만큼 쌓이면 디스코드에 한 번 알림
+SEND_MAX_TRIES = 12       # 디스코드 전송이 이만큼 실패하면 그 글은 포기 (요약은 다시 만들지 않음)
+CLAUDE_DAILY_LIMIT = int(os.environ.get("CLAUDE_DAILY_LIMIT", 30))  # 하루 Claude 요약 최대 횟수
 SUMMARY_MODEL = "claude-opus-5-5"
 
 SYSTEM_PROMPT = """너는 모바일 MMORPG '도깨비의세계' 공식 공지를 디스코드 문파 채널용으로 요약한다.
@@ -232,15 +234,17 @@ def summarize_by_rules(body):
     return "\n".join(f"• {l}" for l in chosen)
 
 
-def summarize(title, body):
+def summarize(title, body, use_claude=True):
+    """(요약문, Claude 호출 여부) 를 돌려준다."""
     if len(body) < 30:
-        return "• 본문이 이미지 위주라 요약할 글이 없어요. 링크에서 확인해 주세요."
-    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "• 본문이 이미지 위주라 요약할 글이 없어요. 링크에서 확인해 주세요.", False
+    if use_claude and os.environ.get("ANTHROPIC_API_KEY"):
         try:
-            return summarize_with_claude(title, body)
+            return summarize_with_claude(title, body), True
         except Exception as e:  # 요약 실패로 공지 전달까지 막히면 안 됨
             print(f"[경고] Claude 요약 실패, 규칙 기반으로 대체: {e}", file=sys.stderr)
-    return summarize_by_rules(body)
+            return summarize_by_rules(body), True
+    return summarize_by_rules(body), False
 
 
 # ---------------------------------------------------------------- discord
@@ -266,12 +270,13 @@ def parse_time(value):
         return None
 
 
-def build_message(board_name, code, post, detail):
+def build_message(board_name, code, post, detail, use_claude=True):
+    """(디스코드 payload, Claude 호출 여부) 를 돌려준다."""
     title = str(detail.get("title") or post.get("title") or "제목 없음")
     prefix = prefix_text(post)
     shown_title = title if not prefix or f"[{prefix}]" in title else f"[{prefix}] {title}"
     body, images = html_to_text(detail.get("content", ""))
-    summary = summarize(title, body)
+    summary, used_claude = summarize(title, body, use_claude)
 
     embed = {
         "title": shown_title[:256],
@@ -285,7 +290,7 @@ def build_message(board_name, code, post, detail):
         embed["timestamp"] = when.isoformat()
     if images:
         embed["image"] = {"url": images[0]}
-    return {"username": "도깨비의세계 공지", "embeds": [embed]}
+    return {"username": "도깨비의세계 공지", "embeds": [embed]}, used_claude
 
 
 def send_discord(payload, webhook, dry_run=False):
@@ -318,10 +323,36 @@ def post_num(post):
     return int(post["post_id"]) if str(post["post_id"]).isdigit() else None
 
 
+def claude_allowed(state):
+    usage = state.get("claude_usage", {})
+    today = datetime.now().strftime("%Y-%m-%d")
+    if usage.get("date") != today:
+        state["claude_usage"] = usage = {"date": today, "count": 0}
+    return usage["count"] < CLAUDE_DAILY_LIMIT
+
+
+def flush_outbox(state, dry_run):
+    """보낼 메시지를 전송한다. 실패한 건 다음 실행 때 같은 내용으로 다시 보낸다."""
+    remaining = []
+    for item in state.get("outbox", []):
+        try:
+            send_discord(item["payload"], webhook_for(item["board"]), dry_run)
+            print(f"[{item['board']}] 전송: {item['title']}")
+        except Exception as e:
+            item["tries"] = item.get("tries", 0) + 1
+            if item["tries"] >= SEND_MAX_TRIES:
+                print(f"[오류] 디스코드 전송 {item['tries']}회 실패, 포기: {item['title']} ({e})", file=sys.stderr)
+            else:
+                print(f"[경고] 디스코드 전송 실패 ({item['tries']}회), 다음에 다시 시도: {e}", file=sys.stderr)
+                remaining.append(item)
+    state["outbox"] = remaining
+
+
 def check_once(args):
     board_codes = env_list("BOARD_CODES", [])
     state = load_state()
     state.setdefault("floor", {})
+    state.setdefault("outbox", [])
 
     try:
         boards = list_boards()
@@ -358,8 +389,13 @@ def check_once(args):
             else:
                 for post in new:
                     detail = fetch_post_detail(code, post["post_id"])
-                    send_discord(build_message(name, code, post, detail), webhook_for(name), args.dry_run)
-                    print(f"[{name}] 전송: {post.get('title')}")
+                    payload, used_claude = build_message(name, code, post, detail, claude_allowed(state))
+                    if used_claude:
+                        state["claude_usage"]["count"] += 1
+                    # 요약을 만든 즉시 '본 글'로 기록해서, 전송이 실패해도 요약을 다시 만들지 않는다
+                    state["outbox"].append({"board": name, "title": str(post.get("title")), "payload": payload})
+                    seen.add(str(post["post_id"]))
+                    state["seen"][code] = sorted(seen, key=lambda x: int(x) if x.isdigit() else 0)
                     sent += 1
             seen.update(str(p["post_id"]) for p in posts)
             state["seen"][code] = sorted(seen, key=lambda x: int(x) if x.isdigit() else 0)[-SEEN_LIMIT:]
@@ -372,15 +408,17 @@ def check_once(args):
         state["fail_count"] = state.get("fail_count", 0) + 1
         print(f"[경고] 포럼 접속 실패 ({state['fail_count']}회 연속): {e}", file=sys.stderr)
         if state["fail_count"] >= FAIL_ALERT_AFTER and not state.get("fail_alerted"):
-            webhook = webhook_for("공지")  # 장애 알림은 공지 채널로
-            send_discord({"username": "도깨비의세계 공지",
-                          "content": f"⚠️ 포럼 공지를 {state['fail_count']}회 연속 못 가져왔어요. ({e})"},
-                         webhook, args.dry_run)
+            # 장애 알림은 공지 채널로
+            state["outbox"].append({"board": "공지", "title": "포럼 접속 실패 경고", "payload": {
+                "username": "도깨비의세계 공지",
+                "content": f"⚠️ 포럼 공지를 {state['fail_count']}회 연속 못 가져왔어요. ({e})"}})
             state["fail_alerted"] = True
         return 0
     finally:
-        if not args.list_boards and not args.dry_run:
-            save_state(state)
+        if not args.list_boards:
+            flush_outbox(state, args.dry_run)
+            if not args.dry_run:
+                save_state(state)
 
 
 def main():
@@ -398,7 +436,11 @@ def main():
     if not args.loop:
         return check_once(args)
     while True:
-        check_once(args)
+        try:
+            check_once(args)
+        except Exception as e:  # 예상 못 한 오류가 나도 서버에서 계속 돌게 한다
+            print(f"[오류] 확인 중 예외: {e!r}", file=sys.stderr)
+        sys.stdout.flush()
         time.sleep(args.interval)
 
 

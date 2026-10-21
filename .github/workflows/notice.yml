@@ -1,8 +1,10 @@
 name: 도깨비의세계 공지 확인
 
+# GitHub 서버 IP는 포럼 API가 막고 있어서(HTTP 403) 예약 실행은 꺼 두었다. 봇은 Oracle 서버에서 돈다.
+# 다시 쓰려면 아래 주석을 풀면 된다.
 on:
-  schedule:
-    - cron: "*/10 * * * *"   # 10분마다 (GitHub 사정에 따라 몇 분씩 늦어질 수 있음)
+  # schedule:
+  #   - cron: "*/10 * * * *"
   workflow_dispatch:          # Actions 탭에서 수동 실행
     inputs:
       post_latest:
