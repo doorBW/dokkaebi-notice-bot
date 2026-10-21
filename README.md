@@ -83,7 +83,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 .venv\Scripts\python bot.py --loop                   # 5분마다 계속 확인 (--interval 초 단위로 조절)
 ```
 
-`--post-latest`는 아직 `state.json`이 없을 때(처음 실행)만 동작합니다. 다시 테스트하려면 `state.json`을 지우세요.
+`--post-latest`는 이미 본 글이어도 게시판마다 가장 최근 글 1개를 보내고, 나머지는 읽음 처리합니다.
+GitHub에서는 Actions 탭 → "도깨비의세계 공지 확인" → **Run workflow**에서
+"게시판마다 가장 최근 글 1개를 보내보기"를 체크하고 실행하면 같은 동작을 합니다.
 
 ## 설정값
 

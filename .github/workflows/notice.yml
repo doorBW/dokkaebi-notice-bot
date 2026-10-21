@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/10 * * * *"   # 10분마다 (GitHub 사정에 따라 몇 분씩 늦어질 수 있음)
   workflow_dispatch:          # Actions 탭에서 수동 실행
+    inputs:
+      post_latest:
+        description: "게시판마다 가장 최근 글 1개를 보내보기 (연결 테스트)"
+        type: boolean
+        default: false
 
 concurrency:
   group: notice
@@ -38,7 +43,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           BOARD_CODES: ${{ vars.BOARD_CODES }}
-        run: python bot.py
+        run: python bot.py ${{ inputs.post_latest && '--post-latest' || '' }}
 
       - name: 상태 저장
         if: always()

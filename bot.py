@@ -351,11 +351,11 @@ def check_once(args):
                 nums = [post_num(p) for p in posts if post_num(p) is not None]
                 if nums:
                     state["floor"][code] = max(nums)
+            if args.post_latest:  # 연결 테스트: 이미 본 글이어도 가장 최근 글 1개만 보낸다
+                new = sorted(posts, key=lambda p: post_num(p) or 0)[-1:]
             if first_run and not args.post_latest:
                 print(f"[{name}] 처음 실행: 기존 글 {len(new)}개를 읽음 처리 (전송 안 함)")
             else:
-                if first_run:  # --post-latest: 테스트용으로 가장 최근 1개만 보낸다
-                    new = new[-1:]
                 for post in new:
                     detail = fetch_post_detail(code, post["post_id"])
                     send_discord(build_message(name, code, post, detail), webhook_for(name), args.dry_run)
@@ -391,7 +391,7 @@ def main():
                     help="--loop 확인 간격(초), 기본 300")
     ap.add_argument("--dry-run", action="store_true", help="디스코드로 보내지 않고 출력만")
     ap.add_argument("--post-latest", action="store_true",
-                    help="처음 실행일 때 가장 최근 공지 1개를 보내본다 (연결 테스트)")
+                    help="게시판마다 가장 최근 글 1개를 보내본다 (연결 테스트, 나머지는 읽음 처리)")
     ap.add_argument("--list-boards", action="store_true", help="게시판 코드 목록 출력")
     args = ap.parse_args()
 
