@@ -38,7 +38,6 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           BOARD_CODES: ${{ vars.BOARD_CODES }}
-          NOTICE_KEYWORDS: ${{ vars.NOTICE_KEYWORDS || '점검,업데이트,패치' }}
         run: python bot.py
 
       - name: 상태 저장

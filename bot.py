@@ -1,4 +1,4 @@
-"""도깨비의세계 공식 포럼의 점검/업데이트 공지를 디스코드 채널로 전달하는 봇.
+"""도깨비의세계 공식 포럼 공지사항·업데이트 게시판의 새 글을 디스코드 채널로 전달하는 봇.
 
 한 번 실행하면 새 공지를 확인해 웹훅으로 보내고 끝난다 (GitHub Actions, 작업 스케줄러용).
 --loop 를 주면 계속 돌면서 일정 간격으로 확인한다 (상시 켜둔 PC/서버용).
@@ -45,6 +45,7 @@ SYSTEM_PROMPT = """너는 모바일 MMORPG '도깨비의세계' 공식 공지를
 - 한국어, 3~6줄의 글머리표(•)로만 답한다. 인사말이나 머리말은 쓰지 않는다.
 - 점검 공지면 점검 일시(시작~종료), 대상 서버, 점검 중 제한 사항, 보상을 우선 적는다.
 - 업데이트 공지면 핵심 신규 콘텐츠와 변경점, 이벤트 기간, 보상을 우선 적는다.
+- 그 밖의 공지(이벤트, 운영 안내 등)는 핵심 내용, 기간, 대상, 보상을 적는다.
 - 공지에 없는 내용은 추측하지 않는다. 날짜와 시간은 공지 표기 그대로 쓴다."""
 
 
@@ -313,17 +314,14 @@ def save_state(state):
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def is_wanted(post, board_name, keywords):
-    if not keywords or any(k in board_name for k in keywords):
-        return True
-    text = f"{prefix_text(post)} {post.get('title', '')}"
-    return any(k in text for k in keywords)
+def post_num(post):
+    return int(post["post_id"]) if str(post["post_id"]).isdigit() else None
 
 
 def check_once(args):
-    keywords = env_list("NOTICE_KEYWORDS", ["점검", "업데이트", "패치"])
     board_codes = env_list("BOARD_CODES", [])
     state = load_state()
+    state.setdefault("floor", {})
 
     try:
         boards = list_boards()
@@ -342,17 +340,23 @@ def check_once(args):
             seen = state["seen"].get(code)
             first_run = seen is None
             seen = set(seen or [])
-            new = [p for p in posts if str(p["post_id"]) not in seen]
-            new.sort(key=lambda p: int(p["post_id"]) if str(p["post_id"]).isdigit() else 0)
+            # 처음 본 글 번호 중 가장 큰 값. 이보다 번호가 작은 글은 나중에 고정글로
+            # 올라와도 예전 글이므로 보내지 않는다.
+            floor = state["floor"].get(code)
+            new = [p for p in posts if str(p["post_id"]) not in seen
+                   and not (floor is not None and post_num(p) is not None and post_num(p) <= floor)]
+            new.sort(key=lambda p: post_num(p) or 0)
 
+            if first_run:
+                nums = [post_num(p) for p in posts if post_num(p) is not None]
+                if nums:
+                    state["floor"][code] = max(nums)
             if first_run and not args.post_latest:
                 print(f"[{name}] 처음 실행: 기존 글 {len(new)}개를 읽음 처리 (전송 안 함)")
             else:
                 if first_run:  # --post-latest: 테스트용으로 가장 최근 1개만 보낸다
-                    new = [p for p in new if is_wanted(p, name, keywords)][-1:]
+                    new = new[-1:]
                 for post in new:
-                    if not is_wanted(post, name, keywords):
-                        continue
                     detail = fetch_post_detail(code, post["post_id"])
                     send_discord(build_message(name, code, post, detail), webhook_for(name), args.dry_run)
                     print(f"[{name}] 전송: {post.get('title')}")
