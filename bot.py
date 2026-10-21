@@ -31,7 +31,13 @@ HEADERS = {
     "Referer": "https://forum.kakaogames.com/dokkaebi/",
 }
 
-SEEN_LIMIT = 300          # 게시판별로 기억할 글 번호 수
+# 게시판 이름에 들어간 단어 → 그 게시판 글을 보낼 웹훅 환경변수 (위에서부터 먼저 맞는 것)
+ROUTES = [
+    ("업데이트", "DISCORD_WEBHOOK_UPDATE"),
+    ("공지", "DISCORD_WEBHOOK_NOTICE"),
+]
+
+SEEN_LIMIT = 300         # 게시판별로 기억할 글 번호 수
 FAIL_ALERT_AFTER = 12     # 연속 실패가 이만큼 쌓이면 디스코드에 한 번 알림
 SUMMARY_MODEL = "claude-opus-5-5"
 
@@ -103,15 +109,28 @@ def list_boards():
     return find_dicts_with(api_get("/boards"), "board_code")
 
 
-def pick_boards(boards, wanted_codes, name_keywords):
-    if wanted_codes:
-        named = {b.get("board_code"): b.get("name", "") for b in boards}
-        return [(c, named.get(c) or c) for c in wanted_codes]
+def route_env(board_name):
+    for word, env_name in ROUTES:
+        if word in board_name:
+            return env_name
+    return None
+
+
+def webhook_for(board_name):
+    """게시판 전용 웹훅이 없으면 DISCORD_WEBHOOK_URL 로 보낸다."""
+    env_name = route_env(board_name)
+    return (env_name and os.environ.get(env_name)) or os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+
+def pick_boards(boards, wanted_codes):
     picked = []
     for b in boards:
-        name = str(b.get("name", ""))
-        if any(k in name for k in name_keywords):
-            picked.append((b["board_code"], name))
+        code, name = b.get("board_code"), str(b.get("name", ""))
+        if wanted_codes:
+            if code in wanted_codes:
+                picked.append((code, name or code))
+        elif route_env(name):
+            picked.append((code, name))
     return picked
 
 
@@ -225,10 +244,10 @@ def summarize(title, body):
 
 # ---------------------------------------------------------------- discord
 
-def notice_color(title):
+def notice_color(title, board_name=""):
     if "점검" in title:
         return 0xE67E22
-    if "업데이트" in title or "패치" in title:
+    if "업데이트" in board_name or "업데이트" in title or "패치" in title:
         return 0x3498DB
     return 0x95A5A6
 
@@ -257,7 +276,7 @@ def build_message(board_name, code, post, detail):
         "title": shown_title[:256],
         "url": POST_URL.format(code=code, post_id=post["post_id"]),
         "description": summary[:4000],
-        "color": notice_color(shown_title),
+        "color": notice_color(shown_title, board_name),
         "footer": {"text": f"도깨비의세계 · {board_name}"},
     }
     when = parse_time(detail.get("published_at") or post.get("published_at"))
@@ -302,19 +321,18 @@ def is_wanted(post, board_name, keywords):
 
 
 def check_once(args):
-    webhook = os.environ.get("DISCORD_WEBHOOK_URL", "")
     keywords = env_list("NOTICE_KEYWORDS", ["점검", "업데이트", "패치"])
     board_codes = env_list("BOARD_CODES", [])
-    board_keywords = env_list("BOARD_NAME_KEYWORDS", ["공지", "업데이트", "점검"])
     state = load_state()
 
     try:
-        boards = list_boards() if not board_codes or args.list_boards else []
+        boards = list_boards()
         if args.list_boards:
             for b in boards:
-                print(f"{b.get('board_code')}\t{b.get('name')}")
+                name = str(b.get("name", ""))
+                print(f"{b.get('board_code')}\t{name}\t-> {route_env(name) or '(감시 안 함)'}")
             return 0
-        targets = pick_boards(boards, board_codes, board_keywords)
+        targets = pick_boards(boards, board_codes)
         if not targets:
             raise ForumError("감시할 게시판을 못 찾음 (--list-boards 로 확인 후 BOARD_CODES 지정)")
 
@@ -336,7 +354,7 @@ def check_once(args):
                     if not is_wanted(post, name, keywords):
                         continue
                     detail = fetch_post_detail(code, post["post_id"])
-                    send_discord(build_message(name, code, post, detail), webhook, args.dry_run)
+                    send_discord(build_message(name, code, post, detail), webhook_for(name), args.dry_run)
                     print(f"[{name}] 전송: {post.get('title')}")
                     sent += 1
             seen.update(str(p["post_id"]) for p in posts)
@@ -350,6 +368,7 @@ def check_once(args):
         state["fail_count"] = state.get("fail_count", 0) + 1
         print(f"[경고] 포럼 접속 실패 ({state['fail_count']}회 연속): {e}", file=sys.stderr)
         if state["fail_count"] >= FAIL_ALERT_AFTER and not state.get("fail_alerted"):
+            webhook = webhook_for("공지")  # 장애 알림은 공지 채널로
             send_discord({"username": "도깨비의세계 공지",
                           "content": f"⚠️ 포럼 공지를 {state['fail_count']}회 연속 못 가져왔어요. ({e})"},
                          webhook, args.dry_run)

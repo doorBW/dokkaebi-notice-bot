@@ -33,6 +33,8 @@ jobs:
 
       - name: 공지 확인
         env:
+          DISCORD_WEBHOOK_NOTICE: ${{ secrets.DISCORD_WEBHOOK_NOTICE }}
+          DISCORD_WEBHOOK_UPDATE: ${{ secrets.DISCORD_WEBHOOK_UPDATE }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           BOARD_CODES: ${{ vars.BOARD_CODES }}
