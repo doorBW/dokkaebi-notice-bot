@@ -22,13 +22,11 @@ STATE_PATH = Path(os.environ.get("STATE_PATH", ROOT / "state.json"))
 
 API = "https://forum-api.kakaogames.com/v1/dokkaebi"
 POST_URL = "https://forum.kakaogames.com/dokkaebi/postView/?code={code}&id={post_id}"
+# 포럼 API 앞단 방화벽이 curl·python-requests·데스크톱 브라우저 표시를 단 요청 등을 막는다 (2026-10 확인).
+# 막히면 FORUM_USER_AGENT 로 바꿔 볼 수 있다.
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "User-Agent": os.environ.get("FORUM_USER_AGENT", "notice-relay/1.0"),
     "Accept": "application/json",
-    "Accept-Language": "ko-KR,ko;q=0.9",
-    "Origin": "https://forum.kakaogames.com",
-    "Referer": "https://forum.kakaogames.com/dokkaebi/",
 }
 
 # 게시판 이름에 들어간 단어 → 그 게시판 글을 보낼 웹훅 환경변수 (위에서부터 먼저 맞는 것)
@@ -265,7 +263,7 @@ def parse_time(value):
             ts = int(value)
             return datetime.fromtimestamp(ts / 1000 if ts > 1e12 else ts, tz=timezone.utc)
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone(datetime.now().astimezone().utcoffset()))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # 포럼 API 시각은 시간대 없는 UTC
     except (ValueError, OSError):
         return None
 
@@ -275,7 +273,7 @@ def build_message(board_name, code, post, detail, use_claude=True):
     title = str(detail.get("title") or post.get("title") or "제목 없음")
     prefix = prefix_text(post)
     shown_title = title if not prefix or f"[{prefix}]" in title else f"[{prefix}] {title}"
-    body, images = html_to_text(detail.get("content", ""))
+    body, _ = html_to_text(detail.get("content", ""))  # 본문 첫 이미지는 모든 공지 공통 배너라 쓰지 않는다
     summary, used_claude = summarize(title, body, use_claude)
 
     embed = {
@@ -288,8 +286,8 @@ def build_message(board_name, code, post, detail, use_claude=True):
     when = parse_time(detail.get("published_at") or post.get("published_at"))
     if when:
         embed["timestamp"] = when.isoformat()
-    if images:
-        embed["image"] = {"url": images[0]}
+    if post.get("thumbnail_url"):
+        embed["image"] = {"url": post["thumbnail_url"]}
     return {"username": "도깨비의세계 공지", "embeds": [embed]}, used_claude
 
 
@@ -425,8 +423,8 @@ def main():
     load_dotenv()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--loop", action="store_true", help="계속 돌면서 주기적으로 확인")
-    ap.add_argument("--interval", type=int, default=int(os.environ.get("CHECK_INTERVAL", 300)),
-                    help="--loop 확인 간격(초), 기본 300")
+    ap.add_argument("--interval", type=int, default=int(os.environ.get("CHECK_INTERVAL", 600)),
+                    help="--loop 확인 간격(초), 기본 600")
     ap.add_argument("--dry-run", action="store_true", help="디스코드로 보내지 않고 출력만")
     ap.add_argument("--post-latest", action="store_true",
                     help="게시판마다 가장 최근 글 1개를 보내본다 (연결 테스트, 나머지는 읽음 처리)")

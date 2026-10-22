@@ -74,7 +74,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 .venv\Scripts\python bot.py --list-boards            # 게시판 목록과 각 게시판이 어느 웹훅으로 가는지 보기
 .venv\Scripts\python bot.py --post-latest --dry-run  # 최근 공지 1건을 디스코드 대신 화면에 출력
 .venv\Scripts\python bot.py --post-latest            # 최근 공지 1건을 실제로 보내서 연결 테스트
-.venv\Scripts\python bot.py --loop                   # 5분마다 계속 확인 (--interval 초 단위로 조절)
+.venv\Scripts\python bot.py --loop                   # 10분마다 계속 확인 (--interval 초 단위로 조절)
 ```
 
 `--post-latest`는 이미 본 글이어도 게시판마다 가장 최근 글 1개를 보내고, 나머지는 읽음 처리합니다.
@@ -90,5 +90,6 @@ GitHub에서는 Actions 탭 → "도깨비의세계 공지 확인" → **Run wor
 | `DISCORD_WEBHOOK_URL` | 없음 | 위 두 개가 없을 때 대신 쓰는 채널. 셋 다 없으면 화면에 출력만 |
 | `ANTHROPIC_API_KEY` | 없음 | 있으면 Claude(`claude-opus-5-5`)로 요약 |
 | `BOARD_CODES` | 자동 | 비우면 이름에 `공지`/`업데이트`가 들어간 게시판을 자동 선택 |
-| `CHECK_INTERVAL` | `300` | `--loop` 확인 간격(초) |
+| `CHECK_INTERVAL` | `600` | `--loop` 확인 간격(초). 포럼에 차단되지 않게 너무 줄이지 마세요 |
+| `FORUM_USER_AGENT` | `notice-relay/1.0` | 포럼 API에 보내는 User-Agent. 포럼 방화벽이 curl·python-requests·데스크톱 브라우저 표시 등을 막아서 바꿔 둔 값 |
 | `CLAUDE_DAILY_LIMIT` | `30` | 하루 Claude 요약 최대 횟수 |
