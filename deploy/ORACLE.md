@@ -77,7 +77,7 @@ zero object-storage quotas in tenancy
 서버에 접속해서 아래를 실행합니다 (제가 대신 실행해도 됩니다).
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" -A "Mozilla/5.0" -H "Origin: https://forum.kakaogames.com" "https://forum-api.kakaogames.com/v1/dokkaebi/boards?lang=ko"
+curl -s -o /dev/null -w "%{http_code}\n" -A "notice-relay/1.0" "https://forum-api.kakaogames.com/v1/dokkaebi/boards?lang=ko"
 ```
 
 - `200` → 통과. 7단계로.
