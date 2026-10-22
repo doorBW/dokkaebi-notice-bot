@@ -1,4 +1,4 @@
-# Oracle Cloud(한국 리전)에 봇 올리기
+# Oracle Cloud 무료 서버에 봇 올리기
 
 순서가 중요해요. **잠금 장치(2~4단계)를 먼저 걸고**, 서버를 만든 뒤 **포럼 접속 테스트(6단계)가 통과하면** 그때 종량제로 바꾸고 봇을 설치합니다.
 테스트에서 막히면 종량제 전환 없이 무료 계정 그대로 접으면 돼요.
@@ -13,8 +13,9 @@
 ## 1. 가입
 
 1. https://www.oracle.com/cloud/free/ → **Start for free**
-2. **Home Region**은 가입할 때 한 번만 고를 수 있어요 → **South Korea Central (Seoul)** 또는 **South Korea North (Chuncheon)**
-   - 어느 쪽이든 이 봇에 쓰는 서버(AMD Micro)는 무료입니다. 고른 리전 ID를 기억해 두세요: 서울 `ap-seoul-1`, 춘천 `ap-chuncheon-1`
+2. **Home Region**은 가입할 때 한 번만 고를 수 있어요. 무료 서버는 홈 리전에서만 만들 수 있습니다.
+   - 실제 운영 서버는 **Japan East (Tokyo), `ap-tokyo-1`** 입니다 (가입 당시 한국 리전이 목록에 없었음).
+   - 포럼은 나라가 아니라 User-Agent와 일부 IP를 보고 막기 때문에 리전은 크게 상관없습니다. 아래 정책의 `ap-seoul-1`은 고른 리전 ID로 바꾸세요.
 3. 카드 본인 확인을 마치면 무료 계정(Free Tier)이 만들어집니다. 이 상태에서는 요금이 나가지 않아요.
 
 ## 2. 2단계 인증(MFA) 켜기 — 계정 탈취 대비
@@ -26,7 +27,7 @@
 메뉴 ☰ → **Governance & Administration** → **Tenancy Management** → **Quota policies** → **Create quota**
 
 - 이름: `free-only`
-- 정책 내용: 아래를 **한 정책 안에 통째로** 붙여 넣습니다. 춘천이면 `ap-seoul-1` 세 군데를 `ap-chuncheon-1`로 바꾸세요.
+- 정책 내용: 아래를 **한 정책 안에 통째로** 붙여 넣습니다. `ap-seoul-1` 세 군데를 홈 리전 ID(도쿄면 `ap-tokyo-1`)로 바꾸세요.
 
 ```
 zero compute-core quotas in tenancy
@@ -80,7 +81,8 @@ curl -s -o /dev/null -w "%{http_code}\n" -A "Mozilla/5.0" -H "Origin: https://fo
 ```
 
 - `200` → 통과. 7단계로.
-- `403` → 이 리전 Oracle IP도 막혀 있음. 종량제 전환하지 말고 멈추세요.
+- `403` → 이 서버 IP가 막혀 있거나 포럼 방화벽 규칙이 바뀐 것. 종량제 전환하지 말고 멈추세요.
+  (curl 기본값·python-requests·PC 브라우저 User-Agent는 원래 403이 납니다. 반드시 위 명령 그대로 시험하세요.)
 
 ## 7. 종량제(Pay As You Go) 전환 — 놀고 있는 서버 자동 정지 막기
 
