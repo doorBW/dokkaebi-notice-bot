@@ -35,7 +35,15 @@ ROUTES = [
     ("공지", "DISCORD_WEBHOOK_NOTICE"),
 ]
 
-SEEN_LIMIT = 300         # 게시판별로 기억할 글 번호 수
+# 감시할 게시판 (코드, 이름). 포럼 요청을 줄이려고 게시판 목록 API 는 부르지 않는다.
+# 게시판이 바뀌면 --list-boards 로 확인해서 여기를 고친다.
+BOARDS = [
+    ("notice", "공지사항"),
+    ("update", "업데이트"),
+]
+
+MAX_BACKOFF = 1800        # 포럼 접속이 계속 실패할 때 확인 간격을 최대 이만큼(초)까지 늘린다
+SEEN_LIMIT = 300        # 게시판별로 기억할 글 번호 수
 FAIL_ALERT_AFTER = 12     # 연속 실패가 이만큼 쌓이면 디스코드에 한 번 알림
 SEND_MAX_TRIES = 12       # 디스코드 전송이 이만큼 실패하면 그 글은 포기 (요약은 다시 만들지 않음)
 CLAUDE_DAILY_LIMIT = int(os.environ.get("CLAUDE_DAILY_LIMIT", 30))  # 하루 Claude 요약 최대 횟수
@@ -60,13 +68,6 @@ def load_dotenv():
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
-def env_list(name, default):
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return [x.strip() for x in raw.split(",") if x.strip()]
 
 
 # ---------------------------------------------------------------- forum API
@@ -123,30 +124,9 @@ def webhook_for(board_name):
     return (env_name and os.environ.get(env_name)) or os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 
-def pick_boards(boards, wanted_codes):
-    picked = []
-    for b in boards:
-        code, name = b.get("board_code"), str(b.get("name", ""))
-        if wanted_codes:
-            if code in wanted_codes:
-                picked.append((code, name or code))
-        elif route_env(name):
-            picked.append((code, name))
-    return picked
-
-
 def fetch_posts(code):
-    posts = {}
-    for path in (f"/boards/{code}/pinned", f"/boards/{code}/list"):
-        try:
-            data = api_get(path, page=1, size=18)
-        except ForumError:
-            if path.endswith("pinned"):
-                continue  # 고정글이 없는 게시판일 수 있음
-            raise
-        for p in find_dicts_with(data, "post_id"):
-            posts[str(p["post_id"])] = p
-    return list(posts.values())
+    """최신글 첫 페이지만 받는다. 새 글은 고정 여부와 상관없이 여기 나온다."""
+    return find_dicts_with(api_get(f"/boards/{code}/list", page=1, size=18), "post_id")
 
 
 def fetch_post_detail(code, post_id):
@@ -346,31 +326,33 @@ def flush_outbox(state, dry_run):
     state["outbox"] = remaining
 
 
+def print_boards():
+    """포럼의 게시판 목록을 보여준다 (BOARDS 를 고칠 때 확인용)."""
+    watched = {code for code, _ in BOARDS}
+    for b in list_boards():
+        code, name = b.get("board_code"), str(b.get("name", ""))
+        print(f"{code}\t{name}\t{'<- 감시 중' if code in watched else ''}")
+
+
+def next_delay(interval, fail_count):
+    """포럼 접속이 연속으로 실패하면 확인 간격을 2배씩 늘린다 (최대 MAX_BACKOFF)."""
+    return min(interval * 2 ** min(fail_count, 10), max(interval, MAX_BACKOFF))
+
+
 def check_once(args):
-    board_codes = env_list("BOARD_CODES", [])
     state = load_state()
     state.setdefault("floor", {})
     state.setdefault("outbox", [])
 
     try:
-        boards = list_boards()
-        if args.list_boards:
-            for b in boards:
-                name = str(b.get("name", ""))
-                print(f"{b.get('board_code')}\t{name}\t-> {route_env(name) or '(감시 안 함)'}")
-            return 0
-        targets = pick_boards(boards, board_codes)
-        if not targets:
-            raise ForumError("감시할 게시판을 못 찾음 (--list-boards 로 확인 후 BOARD_CODES 지정)")
-
         sent = 0
-        for code, name in targets:
+        for code, name in BOARDS:
             posts = fetch_posts(code)
             seen = state["seen"].get(code)
             first_run = seen is None
             seen = set(seen or [])
-            # 처음 본 글 번호 중 가장 큰 값. 이보다 번호가 작은 글은 나중에 고정글로
-            # 올라와도 예전 글이므로 보내지 않는다.
+            # 처음 본 글 번호 중 가장 큰 값. 이보다 번호가 작은 예전 글이 목록에
+            # 다시 나타나도(재고정 등) 보내지 않는다.
             floor = state["floor"].get(code)
             new = [p for p in posts if str(p["post_id"]) not in seen
                    and not (floor is not None and post_num(p) is not None and post_num(p) <= floor)]
@@ -400,7 +382,7 @@ def check_once(args):
 
         state["fail_count"] = 0
         state.pop("fail_alerted", None)
-        print(f"확인 완료: 게시판 {len(targets)}개, 새 공지 {sent}건")
+        print(f"확인 완료: 게시판 {len(BOARDS)}개, 새 공지 {sent}건")
         return 0
     except ForumError as e:
         state["fail_count"] = state.get("fail_count", 0) + 1
@@ -413,24 +395,26 @@ def check_once(args):
             state["fail_alerted"] = True
         return 0
     finally:
-        if not args.list_boards:
-            flush_outbox(state, args.dry_run)
-            if not args.dry_run:
-                save_state(state)
+        flush_outbox(state, args.dry_run)
+        if not args.dry_run:
+            save_state(state)
 
 
 def main():
     load_dotenv()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--loop", action="store_true", help="계속 돌면서 주기적으로 확인")
-    ap.add_argument("--interval", type=int, default=int(os.environ.get("CHECK_INTERVAL", 600)),
-                    help="--loop 확인 간격(초), 기본 600")
+    ap.add_argument("--interval", type=int, default=int(os.environ.get("CHECK_INTERVAL", 60)),
+                    help="--loop 확인 간격(초), 기본 60. 포럼 접속이 실패하면 자동으로 늘어난다")
     ap.add_argument("--dry-run", action="store_true", help="디스코드로 보내지 않고 출력만")
     ap.add_argument("--post-latest", action="store_true",
                     help="게시판마다 가장 최근 글 1개를 보내본다 (연결 테스트, 나머지는 읽음 처리)")
     ap.add_argument("--list-boards", action="store_true", help="게시판 코드 목록 출력")
     args = ap.parse_args()
 
+    if args.list_boards:
+        print_boards()
+        return 0
     if not args.loop:
         return check_once(args)
     while True:
@@ -438,8 +422,12 @@ def main():
             check_once(args)
         except Exception as e:  # 예상 못 한 오류가 나도 서버에서 계속 돌게 한다
             print(f"[오류] 확인 중 예외: {e!r}", file=sys.stderr)
+        delay = next_delay(args.interval, load_state().get("fail_count", 0))
+        if delay > args.interval:
+            print(f"[경고] 포럼 접속 실패가 이어져 {delay}초 뒤에 다시 확인합니다", file=sys.stderr)
         sys.stdout.flush()
-        time.sleep(args.interval)
+        sys.stderr.flush()
+        time.sleep(delay)
 
 
 if __name__ == "__main__":

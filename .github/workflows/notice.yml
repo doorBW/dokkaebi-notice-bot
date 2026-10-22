@@ -44,7 +44,6 @@ jobs:
           DISCORD_WEBHOOK_UPDATE: ${{ secrets.DISCORD_WEBHOOK_UPDATE }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          BOARD_CODES: ${{ vars.BOARD_CODES }}
         run: python bot.py ${{ inputs.post_latest && '--post-latest' || '' }}
 
       - name: 상태 저장
