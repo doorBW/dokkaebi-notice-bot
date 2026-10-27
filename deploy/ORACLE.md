@@ -1,6 +1,6 @@
 # Oracle Cloud 무료 서버에 봇 올리기
 
-순서가 중요해요. **잠금 장치(2~4단계)를 먼저 걸고**, 서버를 만든 뒤 **포럼 접속 테스트(6단계)가 통과하면** 그때 종량제로 바꾸고 봇을 설치합니다.
+순서가 중요해요. **잠금 장치(2~4단계)를 먼저 걸고**, 서버를 만든 뒤 **공지 API 접속 테스트(6단계)가 통과하면** 그때 종량제로 바꾸고 봇을 설치합니다.
 테스트에서 막히면 종량제 전환 없이 무료 계정 그대로 접으면 돼요.
 
 ---
@@ -72,17 +72,18 @@ zero object-storage quotas in tenancy
 
 만들어지면 인스턴스 화면의 **Public IP address**를 알려 주세요. 그다음부터는 제가 이 PC에서 접속해서 진행할 수 있어요.
 
-## 6. 포럼 접속 테스트 (가장 중요)
+## 6. 공지 API 접속 테스트 (가장 중요)
 
 서버에 접속해서 아래를 실행합니다 (제가 대신 실행해도 됩니다).
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" -A "notice-relay/1.0" "https://forum-api.kakaogames.com/v1/dokkaebi/boards?lang=ko"
+curl -s -o /dev/null -w "%{http_code}\n" -A "dokkaebi-notice-relay/1.0" "https://web-api.kakaogame.com/supportreal/v2/notice?appId=1329429&country=KR&lang=ko&market=googlePlay&type=notice&cnt=5"
 ```
 
 - `200` → 통과. 7단계로.
-- `403` → 이 서버 IP가 막혀 있거나 포럼 방화벽 규칙이 바뀐 것. 종량제 전환하지 말고 멈추세요.
-  (curl 기본값·python-requests·PC 브라우저 User-Agent는 원래 403이 납니다. 반드시 위 명령 그대로 시험하세요.)
+- `403` → 막혀 있음. 종량제 전환하지 말고 멈추세요. (curl 기본 User-Agent는 403이 나니 `-A`를 꼭 붙이세요.)
+
+공식 커뮤니티(forum.kakaogames.com)의 API는 2026-10-22부터 운영 측이 자동 접근을 막고 있어서 쓰지 않습니다.
 
 ## 7. 종량제(Pay As You Go) 전환 — 놀고 있는 서버 자동 정지 막기
 

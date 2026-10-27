@@ -54,8 +54,8 @@ if grep -qE '^(DISCORD_WEBHOOK_NOTICE|DISCORD_WEBHOOK_UPDATE)=$' .env; then
   exit 1
 fi
 
-echo "== 포럼 접속 확인"
-.venv/bin/python bot.py --list-boards || true
+echo "== 공지 API 접속 확인"
+.venv/bin/python -c "import bot; print('  공지', len(bot.fetch_notices()), '개를 받았어요')" || true
 
 echo "== 5/5 서비스 등록 (자동 시작)"
 sudo tee /etc/systemd/system/$SERVICE.service >/dev/null <<EOF

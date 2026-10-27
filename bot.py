@@ -1,17 +1,22 @@
-"""도깨비의세계 공식 포럼 공지사항·업데이트 게시판의 새 글을 디스코드 채널로 전달하는 봇.
+"""도깨비의세계 공지(카카오게임즈 고객센터 공지)의 새 글을 디스코드 채널로 전달하는 봇.
 
-한 번 실행하면 새 공지를 확인해 웹훅으로 보내고 끝난다 (GitHub Actions, 작업 스케줄러용).
---loop 를 주면 계속 돌면서 일정 간격으로 확인한다 (상시 켜둔 PC/서버용).
+게임 안 공지와 https://bbs.kakaogames.com/ko/1329429/notice/list 가 쓰는 공개 공지 API 를 읽는다.
+제목에 '업데이트'가 들어간 공지는 업데이트 채널로, 나머지는 공지 채널로 보낸다.
+
+한 번 실행하면 새 공지를 확인해 웹훅으로 보내고 끝난다.
+--loop 를 주면 계속 돌면서 일정 간격으로 확인한다 (상시 켜둔 서버용).
 """
 
 import argparse
+import base64
+import binascii
 import html
 import json
 import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -20,31 +25,26 @@ import requests
 ROOT = Path(__file__).resolve().parent
 STATE_PATH = Path(os.environ.get("STATE_PATH", ROOT / "state.json"))
 
-API = "https://forum-api.kakaogames.com/v1/dokkaebi"
-POST_URL = "https://forum.kakaogames.com/dokkaebi/postView/?code={code}&id={post_id}"
-# 포럼 API 앞단 방화벽이 curl·python-requests·데스크톱 브라우저 표시를 단 요청 등을 막는다 (2026-10 확인).
-# 막히면 FORUM_USER_AGENT 로 바꿔 볼 수 있다.
+APP_ID = "1329429"  # 도깨비의세계
+API = "https://web-api.kakaogame.com/supportreal/v2"
+LIST_PARAMS = {"appId": APP_ID, "country": "KR", "lang": "ko", "market": "googlePlay",
+               "type": "notice", "cnt": 30}
+NOTICE_URL = "https://bbs.kakaogames.com/ko/" + APP_ID + "/notice/detail?id={seq}"
 HEADERS = {
-    "User-Agent": os.environ.get("FORUM_USER_AGENT", "notice-relay/1.0"),
+    "User-Agent": os.environ.get(
+        "USER_AGENT", "dokkaebi-notice-relay/1.0 (+https://github.com/doorBW/dokkaebi-notice-bot)"),
     "Accept": "application/json",
 }
 
-# 게시판 이름에 들어간 단어 → 그 게시판 글을 보낼 웹훅 환경변수 (위에서부터 먼저 맞는 것)
+# 제목에 들어간 단어 → (채널 이름, 웹훅 환경변수). 위에서부터 먼저 맞는 것, 아무것도 안 맞으면 마지막 줄.
 ROUTES = [
-    ("업데이트", "DISCORD_WEBHOOK_UPDATE"),
-    ("공지", "DISCORD_WEBHOOK_NOTICE"),
+    ("업데이트", "업데이트", "DISCORD_WEBHOOK_UPDATE"),
+    ("", "공지사항", "DISCORD_WEBHOOK_NOTICE"),
 ]
 
-# 감시할 게시판 (코드, 이름). 포럼 요청을 줄이려고 게시판 목록 API 는 부르지 않는다.
-# 게시판이 바뀌면 --list-boards 로 확인해서 여기를 고친다.
-BOARDS = [
-    ("notice", "공지사항"),
-    ("update", "업데이트"),
-]
-
-MAX_BACKOFF = 1800        # 포럼 접속이 계속 실패할 때 확인 간격을 최대 이만큼(초)까지 늘린다
-SEEN_LIMIT = 300        # 게시판별로 기억할 글 번호 수
-FAIL_ALERT_AFTER = 12     # 연속 실패가 이만큼 쌓이면 디스코드에 한 번 알림
+SEEN_LIMIT = 500          # 기억할 공지 번호 수
+MAX_BACKOFF = 3600        # 공지 API 접속이 계속 실패할 때 확인 간격을 최대 이만큼(초)까지 늘린다
+FAIL_ALERT_AFTER = 6      # 연속 실패가 이만큼 쌓이면 디스코드에 한 번 알림
 SEND_MAX_TRIES = 12       # 디스코드 전송이 이만큼 실패하면 그 글은 포기 (요약은 다시 만들지 않음)
 CLAUDE_DAILY_LIMIT = int(os.environ.get("CLAUDE_DAILY_LIMIT", 30))  # 하루 Claude 요약 최대 횟수
 SUMMARY_MODEL = "claude-opus-5-5"
@@ -70,75 +70,56 @@ def load_dotenv():
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-# ---------------------------------------------------------------- forum API
+# ---------------------------------------------------------------- notice API
 
-class ForumError(Exception):
+class ApiError(Exception):
     pass
 
 
-def api_get(path, **params):
-    params.setdefault("lang", "ko")
+def api_get(path, params=None):
     try:
         r = requests.get(f"{API}{path}", params=params, headers=HEADERS, timeout=20)
     except requests.RequestException as e:
-        raise ForumError(f"{path}: {e}") from e
+        raise ApiError(f"{path}: {e}") from e
     if r.status_code != 200:
-        raise ForumError(f"{path}: HTTP {r.status_code}")
+        raise ApiError(f"{path}: HTTP {r.status_code}")
     try:
-        return r.json()
+        data = r.json()
     except ValueError as e:
-        raise ForumError(f"{path}: JSON 아님") from e
+        raise ApiError(f"{path}: JSON 아님") from e
+    if str(data.get("code", 200)) != "200":
+        raise ApiError(f"{path}: code {data.get('code')} {data.get('message', '')}")
+    return data
 
 
-def find_dicts_with(obj, key):
-    """응답 어딘가에 있는, key 를 가진 dict 들의 목록을 찾아 돌려준다."""
-    if isinstance(obj, list):
-        if obj and all(isinstance(x, dict) for x in obj) and any(key in x for x in obj):
-            return obj
-        for x in obj:
-            found = find_dicts_with(x, key)
-            if found:
-                return found
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            found = find_dicts_with(v, key)
-            if found:
-                return found
-    return []
+def fetch_notices():
+    """공지 목록 첫 페이지. 고정글(is_top=1)이 앞에 오고 그다음 최신순이다."""
+    return api_get("/notice", LIST_PARAMS).get("noticeList", [])
 
 
-def list_boards():
-    return find_dicts_with(api_get("/boards"), "board_code")
+def fetch_notice_detail(seq):
+    return api_get(f"/notice/{APP_ID}/{seq}", {"offset": "+09:00"})
 
 
-def route_env(board_name):
-    for word, env_name in ROUTES:
-        if word in board_name:
-            return env_name
-    return None
+def decode_content(content):
+    """본문은 base64 로 인코딩한 HTML 이다."""
+    try:
+        return base64.b64decode(content or "").decode("utf-8", "replace")
+    except (binascii.Error, ValueError):
+        return content or ""
 
 
-def webhook_for(board_name):
-    """게시판 전용 웹훅이 없으면 DISCORD_WEBHOOK_URL 로 보낸다."""
-    env_name = route_env(board_name)
+def route_for(title):
+    for word, channel, env_name in ROUTES:
+        if word in title:
+            return channel, env_name
+    return ROUTES[-1][1], ROUTES[-1][2]
+
+
+def webhook_for(channel):
+    """채널 전용 웹훅이 없으면 DISCORD_WEBHOOK_URL 로 보낸다."""
+    env_name = next((e for _, c, e in ROUTES if c == channel), None)
     return (env_name and os.environ.get(env_name)) or os.environ.get("DISCORD_WEBHOOK_URL", "")
-
-
-def fetch_posts(code):
-    """최신글 첫 페이지만 받는다. 새 글은 고정 여부와 상관없이 여기 나온다."""
-    return find_dicts_with(api_get(f"/boards/{code}/list", page=1, size=18), "post_id")
-
-
-def fetch_post_detail(code, post_id):
-    data = api_get(f"/boards/{code}/posts/{post_id}")
-    return data.get("payload", data)
-
-
-def prefix_text(post):
-    prefix = post.get("prefix")
-    if isinstance(prefix, dict):
-        return str(prefix.get("name") or prefix.get("label") or "")
-    return str(prefix or "")
 
 
 # ---------------------------------------------------------------- HTML -> text
@@ -148,17 +129,13 @@ class _TextExtractor(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.parts, self.images = [], []
+        self.parts = []
 
     def handle_starttag(self, tag, attrs):
         if tag in self.BLOCK:
             self.parts.append("\n")
         if tag == "li":
             self.parts.append("- ")
-        if tag == "img":
-            src = dict(attrs).get("src")
-            if src and src.startswith("http"):
-                self.images.append(src)
 
     def handle_endtag(self, tag):
         if tag in self.BLOCK:
@@ -174,7 +151,7 @@ def html_to_text(raw):
     text = "".join(p.parts).replace("\xa0", " ")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text)
-    return text.strip(), p.images
+    return text.strip()
 
 
 # ---------------------------------------------------------------- summary
@@ -227,48 +204,43 @@ def summarize(title, body, use_claude=True):
 
 # ---------------------------------------------------------------- discord
 
-def notice_color(title, board_name=""):
+def notice_color(title, channel=""):
     if "점검" in title:
         return 0xE67E22
-    if "업데이트" in board_name or "업데이트" in title or "패치" in title:
+    if "업데이트" in channel or "업데이트" in title or "패치" in title:
         return 0x3498DB
     return 0x95A5A6
 
 
 def parse_time(value):
+    """공지 API 시각은 ISO 형식 UTC 다 (예: 2026-10-27T13:21:00.000Z)."""
     if value in (None, ""):
         return None
     try:
-        if isinstance(value, (int, float)) or str(value).isdigit():
-            ts = int(value)
-            return datetime.fromtimestamp(ts / 1000 if ts > 1e12 else ts, tz=timezone.utc)
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # 포럼 API 시각은 시간대 없는 UTC
-    except (ValueError, OSError):
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
         return None
 
 
-def build_message(board_name, code, post, detail, use_claude=True):
-    """(디스코드 payload, Claude 호출 여부) 를 돌려준다."""
-    title = str(detail.get("title") or post.get("title") or "제목 없음")
-    prefix = prefix_text(post)
-    shown_title = title if not prefix or f"[{prefix}]" in title else f"[{prefix}] {title}"
-    body, _ = html_to_text(detail.get("content", ""))  # 본문 첫 이미지는 모든 공지 공통 배너라 쓰지 않는다
+def build_message(notice, detail, use_claude=True):
+    """(채널 이름, 디스코드 payload, Claude 호출 여부) 를 돌려준다. 본문은 옮기지 않고 요약과 링크만 보낸다."""
+    title = str(detail.get("title") or notice.get("title") or "제목 없음").strip()
+    channel, _ = route_for(title)
+    body = html_to_text(decode_content(detail.get("content")))
     summary, used_claude = summarize(title, body, use_claude)
 
     embed = {
-        "title": shown_title[:256],
-        "url": POST_URL.format(code=code, post_id=post["post_id"]),
+        "title": title[:256],
+        "url": NOTICE_URL.format(seq=notice["seq"]),
         "description": summary[:4000],
-        "color": notice_color(shown_title, board_name),
-        "footer": {"text": f"도깨비의세계 · {board_name}"},
+        "color": notice_color(title, channel),
+        "footer": {"text": f"도깨비의세계 · {channel}"},
     }
-    when = parse_time(detail.get("published_at") or post.get("published_at"))
+    when = parse_time(notice.get("begin_time") or detail.get("begin_time"))
     if when:
         embed["timestamp"] = when.isoformat()
-    if post.get("thumbnail_url"):
-        embed["image"] = {"url": post["thumbnail_url"]}
-    return {"username": "도깨비의세계 공지", "embeds": [embed]}, used_claude
+    return channel, {"username": "도깨비의세계 공지", "embeds": [embed]}, used_claude
 
 
 def send_discord(payload, webhook, dry_run=False):
@@ -290,15 +262,11 @@ def send_discord(payload, webhook, dry_run=False):
 def load_state():
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    return {"seen": {}, "fail_count": 0}
+    return {}
 
 
 def save_state(state):
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-
-
-def post_num(post):
-    return int(post["post_id"]) if str(post["post_id"]).isdigit() else None
 
 
 def claude_allowed(state):
@@ -314,8 +282,8 @@ def flush_outbox(state, dry_run):
     remaining = []
     for item in state.get("outbox", []):
         try:
-            send_discord(item["payload"], webhook_for(item["board"]), dry_run)
-            print(f"[{item['board']}] 전송: {item['title']}")
+            send_discord(item["payload"], webhook_for(item["channel"]), dry_run)
+            print(f"[{item['channel']}] 전송: {item['title']}")
         except Exception as e:
             item["tries"] = item.get("tries", 0) + 1
             if item["tries"] >= SEND_MAX_TRIES:
@@ -326,72 +294,67 @@ def flush_outbox(state, dry_run):
     state["outbox"] = remaining
 
 
-def print_boards():
-    """포럼의 게시판 목록을 보여준다 (BOARDS 를 고칠 때 확인용)."""
-    watched = {code for code, _ in BOARDS}
-    for b in list_boards():
-        code, name = b.get("board_code"), str(b.get("name", ""))
-        print(f"{code}\t{name}\t{'<- 감시 중' if code in watched else ''}")
-
-
 def next_delay(interval, fail_count):
-    """포럼 접속이 연속으로 실패하면 확인 간격을 2배씩 늘린다 (최대 MAX_BACKOFF)."""
+    """공지 API 접속이 연속으로 실패하면 확인 간격을 2배씩 늘린다 (최대 MAX_BACKOFF)."""
     return min(interval * 2 ** min(fail_count, 10), max(interval, MAX_BACKOFF))
+
+
+def begin_key(notice):
+    when = parse_time(notice.get("begin_time"))
+    return when or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def check_once(args):
     state = load_state()
-    state.setdefault("floor", {})
     state.setdefault("outbox", [])
+    for old_key in ("seen", "floor"):  # 예전 공식 커뮤니티(포럼) 버전의 상태값
+        state.pop(old_key, None)
 
     try:
-        sent = 0
-        for code, name in BOARDS:
-            posts = fetch_posts(code)
-            seen = state["seen"].get(code)
-            first_run = seen is None
-            seen = set(seen or [])
-            # 처음 본 글 번호 중 가장 큰 값. 이보다 번호가 작은 예전 글이 목록에
-            # 다시 나타나도(재고정 등) 보내지 않는다.
-            floor = state["floor"].get(code)
-            new = [p for p in posts if str(p["post_id"]) not in seen
-                   and not (floor is not None and post_num(p) is not None and post_num(p) <= floor)]
-            new.sort(key=lambda p: post_num(p) or 0)
+        notices = fetch_notices()
+        seen = state.get("notice_seen")
+        first_run = seen is None
+        seen = set(seen or [])
+        if first_run:
+            # 이 시각보다 먼저 게시된 공지는 나중에 목록에 다시 보여도(재고정 등) 새 글로 보지 않는다.
+            # 미리 써 두고 예약 게시하는 공지는 번호가 작아도 게시 시각이 늦어서 새 글로 잡힌다.
+            state["notice_since"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        since = parse_time(state.get("notice_since")) or datetime.min.replace(tzinfo=timezone.utc)
 
-            if first_run:
-                nums = [post_num(p) for p in posts if post_num(p) is not None]
-                if nums:
-                    state["floor"][code] = max(nums)
-            if args.post_latest:  # 연결 테스트: 이미 본 글이어도 가장 최근 글 1개만 보낸다
-                new = sorted(posts, key=lambda p: post_num(p) or 0)[-1:]
-            if first_run and not args.post_latest:
-                print(f"[{name}] 처음 실행: 기존 글 {len(new)}개를 읽음 처리 (전송 안 함)")
-            else:
-                for post in new:
-                    detail = fetch_post_detail(code, post["post_id"])
-                    payload, used_claude = build_message(name, code, post, detail, claude_allowed(state))
-                    if used_claude:
-                        state["claude_usage"]["count"] += 1
-                    # 요약을 만든 즉시 '본 글'로 기록해서, 전송이 실패해도 요약을 다시 만들지 않는다
-                    state["outbox"].append({"board": name, "title": str(post.get("title")), "payload": payload})
-                    seen.add(str(post["post_id"]))
-                    state["seen"][code] = sorted(seen, key=lambda x: int(x) if x.isdigit() else 0)
-                    sent += 1
-            seen.update(str(p["post_id"]) for p in posts)
-            state["seen"][code] = sorted(seen, key=lambda x: int(x) if x.isdigit() else 0)[-SEEN_LIMIT:]
+        new = [n for n in notices if str(n["seq"]) not in seen and begin_key(n) >= since]
+        if args.post_latest:  # 연결 테스트: 이미 본 글이어도 가장 최근 게시 공지 1개만 보낸다
+            new = sorted(notices, key=begin_key)[-1:]
+        new.sort(key=begin_key)
+
+        sent = 0
+        if first_run and not args.post_latest:
+            print(f"처음 실행: 기존 공지 {len(notices)}개를 읽음 처리 (전송 안 함)")
+        else:
+            for notice in new:
+                detail = fetch_notice_detail(notice["seq"])
+                channel, payload, used_claude = build_message(notice, detail, claude_allowed(state))
+                if used_claude:
+                    state["claude_usage"]["count"] += 1
+                # 요약을 만든 즉시 '본 글'로 기록해서, 전송이 실패해도 요약을 다시 만들지 않는다
+                state["outbox"].append({"channel": channel, "title": str(notice.get("title")), "payload": payload})
+                seen.add(str(notice["seq"]))
+                state["notice_seen"] = sorted(seen, key=int)
+                sent += 1
+        seen.update(str(n["seq"]) for n in notices)
+        state["notice_seen"] = sorted(seen, key=int)[-SEEN_LIMIT:]
 
         state["fail_count"] = 0
         state.pop("fail_alerted", None)
-        print(f"확인 완료: 게시판 {len(BOARDS)}개, 새 공지 {sent}건")
+        print(f"확인 완료: 공지 {len(notices)}개 확인, 새 공지 {sent}건")
         return 0
-    except ForumError as e:
+    except ApiError as e:
         state["fail_count"] = state.get("fail_count", 0) + 1
-        print(f"[경고] 포럼 접속 실패 ({state['fail_count']}회 연속): {e}", file=sys.stderr)
+        print(f"[경고] 공지 API 접속 실패 ({state['fail_count']}회 연속): {e}", file=sys.stderr)
         if state["fail_count"] >= FAIL_ALERT_AFTER and not state.get("fail_alerted"):
             # 장애 알림은 공지 채널로
-            state["outbox"].append({"board": "공지", "title": "포럼 접속 실패 경고", "payload": {
+            state["outbox"].append({"channel": "공지사항", "title": "공지 API 접속 실패 경고", "payload": {
                 "username": "도깨비의세계 공지",
-                "content": f"⚠️ 포럼 공지를 {state['fail_count']}회 연속 못 가져왔어요. ({e})"}})
+                "content": f"⚠️ 공지를 {state['fail_count']}회 연속 못 가져왔어요. ({e})"}})
             state["fail_alerted"] = True
         return 0
     finally:
@@ -404,17 +367,13 @@ def main():
     load_dotenv()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--loop", action="store_true", help="계속 돌면서 주기적으로 확인")
-    ap.add_argument("--interval", type=int, default=int(os.environ.get("CHECK_INTERVAL", 60)),
-                    help="--loop 확인 간격(초), 기본 60. 포럼 접속이 실패하면 자동으로 늘어난다")
+    ap.add_argument("--interval", type=int, default=int(os.environ.get("CHECK_INTERVAL", 900)),
+                    help="--loop 확인 간격(초), 기본 900(15분). 접속이 실패하면 자동으로 늘어난다")
     ap.add_argument("--dry-run", action="store_true", help="디스코드로 보내지 않고 출력만")
     ap.add_argument("--post-latest", action="store_true",
-                    help="게시판마다 가장 최근 글 1개를 보내본다 (연결 테스트, 나머지는 읽음 처리)")
-    ap.add_argument("--list-boards", action="store_true", help="게시판 코드 목록 출력")
+                    help="가장 최근 게시 공지 1개를 보내본다 (연결 테스트, 나머지는 읽음 처리)")
     args = ap.parse_args()
 
-    if args.list_boards:
-        print_boards()
-        return 0
     if not args.loop:
         return check_once(args)
     while True:
@@ -424,7 +383,7 @@ def main():
             print(f"[오류] 확인 중 예외: {e!r}", file=sys.stderr)
         delay = next_delay(args.interval, load_state().get("fail_count", 0))
         if delay > args.interval:
-            print(f"[경고] 포럼 접속 실패가 이어져 {delay}초 뒤에 다시 확인합니다", file=sys.stderr)
+            print(f"[경고] 접속 실패가 이어져 {delay}초 뒤에 다시 확인합니다", file=sys.stderr)
         sys.stdout.flush()
         sys.stderr.flush()
         time.sleep(delay)
